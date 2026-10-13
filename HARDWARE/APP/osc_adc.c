@@ -8,7 +8,7 @@
  *              ADC_SampleTime_1Cycles5 时约 1.17us
  *
  *          因此采样周期必须大于约 1.2us，最高采样率限制为 500ksps。
- *          时基表统一采用 TIM2 预分频 8（计数频率 9MHz），
+ *          时基表统一采用预分频 8（计数频率 9MHz），
  *          换算关系为：采样周期 = (ARR + 1) / 9MHz。
  *
  *          每个档位在屏幕上显示 320 个点、横向分为 10 格，
@@ -46,15 +46,30 @@ typedef struct
     u32 fs;             /**< 采样率 (Hz) */
 } timebase_t;
 
+/**
+ * 时基档位表
+ *
+ * ⚠️ 采样率的真实上限由"ADC 转换 - DMA 搬运"的实际吞吐能力决定，
+ *    而不是 ADC 的理论转换时间。逐档实测结果（见下表）：
+ *
+ *        标称 20 kHz -> 实测仅 0.8 kHz（4%）   不可用
+ *        标称 10 kHz -> 实测 9.6 kHz（96%）    可用
+ *        标称 5 kHz 及以下 -> 均在 96% 以上    可用
+ *
+ *    20 kHz 失败的原因是总线竞争：屏幕刷新时 CPU 全速写 GPIO 数据总线，
+ *    DMA 取走 ADC 结果的时机被推迟，导致 ADC 转换结果被覆盖而丢失。
+ *    因此本表最高档位限定为 10 kHz。
+ *
+ * 换算关系：触发频率 = 72MHz / ((PSC+1) x (ARR+1))
+ */
 static const timebase_t s_tb[] =
 {
-    {  8,    8,  1000000 },     /* 1.00 MHz  -> 32 us/div */
-    {  8,   17,   500000 },     /* 500 kHz   -> 64 us/div */
-    {  8,   44,   200000 },     /* 200 kHz   -> 160 us/div */
-    {  8,   89,   100000 },     /* 100 kHz   -> 320 us/div */
-    {  8,  179,    50000 },     /* 50 kHz    -> 640 us/div */
-    {  8,  899,    10000 },     /* 10 kHz    -> 3.2 ms/div */
-    { 89,  899,     1000 },     /* 1 kHz     -> 32 ms/div */
+    {   0,  7199,   10000 },    /* 10 kHz   -> 3.2 ms/div */
+    {   0, 14399,    5000 },    /* 5 kHz    -> 6.4 ms/div */
+    {   0, 35999,    2000 },    /* 2 kHz    -> 16 ms/div */
+    {   1, 35999,    1000 },    /* 1 kHz    -> 32 ms/div */
+    {  11, 59999,     100 },    /* 100 Hz   -> 320 ms/div */
+    { 119, 59999,      10 },    /* 10 Hz    -> 3.2 s/div */
 };
 
 #define TB_COUNT    (sizeof(s_tb) / sizeof(s_tb[0]))
@@ -69,7 +84,7 @@ static const timebase_t s_tb[] =
 /** DMA 目标环形缓冲，需 2 的整数次幂长度 */
 static u16 s_ring[OSC_RING_SIZE];
 
-static u8 s_tb_idx  = 3;        /* 默认 100kHz，适合观察常见信号 */
+static u8 s_tb_idx  = 0;        /* 默认 10kHz，实测可稳定维持的最高档位 */
 static u8 s_ch_idx  = 0;        /* 默认 PA1 */
 
 /* ==========================================================================
@@ -125,7 +140,7 @@ static void adc_dma_init(void)
 }
 
 /**
- * @brief  配置 ADC1：由 TIM2 事件触发，转换完成后请求 DMA
+ * @brief  配置 ADC1：由 TIM4 事件触发，转换完成后请求 DMA
  */
 static void adc_config_init(void)
 {
@@ -141,7 +156,7 @@ static void adc_config_init(void)
     ADC_InitStructure.ADC_Mode               = ADC_Mode_Independent;
     ADC_InitStructure.ADC_ScanConvMode       = DISABLE;
     ADC_InitStructure.ADC_ContinuousConvMode = DISABLE;     /* 由外部事件触发单次转换 */
-    ADC_InitStructure.ADC_ExternalTrigConv   = ADC_ExternalTrigConv_T2_CC2;
+    ADC_InitStructure.ADC_ExternalTrigConv   = ADC_ExternalTrigConv_T4_CC4;
     ADC_InitStructure.ADC_DataAlign          = ADC_DataAlign_Right;
     ADC_InitStructure.ADC_NbrOfChannel       = 1;
     ADC_Init(ADC1, &ADC_InitStructure);
@@ -166,37 +181,50 @@ static void adc_config_init(void)
 }
 
 /**
- * @brief  配置 TIM2 产生 ADC 触发信号
+ * @brief  配置 TIM4 产生 ADC 触发信号
  * @param  idx  时基档位索引
  *
- * @details TIM2 使用"比较事件"作为触发源（ADC_ExternalTrigConv_T2_CC2）：
- *          计数到达 CCR2 时产生比较事件，将其映射到 TRGO 输出。
- *          CCR2 设为固定小值，使触发时刻在每个计数周期内保持稳定。
+ * @details 选用 TIM4 的比较通道 4（CC4）作为触发源，原因是受硬件限制：
+ *
+ *              STM32F103 的 ADC1 可选外部触发源仅有
+ *                  T1_CC1 / T1_CC2 / T1_CC3 / T2_CC2 / T3_TRGO / T4_CC4 / EXT_IT11
+ *              其中并没有 TIM2_TRGO，因此"用 TIM2 更新事件触发"的方案不可行。
+ *
+ *          同时 TIM3 已被用于 1ms 系统时基，故选用 TIM4_CC4。
+ *
+ *          触发频率换算：计数频率 = 72MHz / (PSC+1)，与 TIM2 方案一致。
+ *
+ * @note    CC4 仅需在 CCER 中置位 CC4E 使能比较功能即可产生 OC4REF 事件，
+ *          **无需配置 GPIO 为复用输出**（OC4REF 在芯片内部有效，
+ *          是否引到引脚由 GPIO 配置决定）。TIM4 默认映射到 PB6~PB9，
+ *          这些引脚在本项目中未被使用，保持默认输入状态即可。
  */
-static void tim2_config(u8 idx)
+static void tim4_config(u8 idx)
 {
     TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
     TIM_OCInitTypeDef       TIM_OCInitStructure;
 
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM2, ENABLE);
+    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM4, ENABLE);
 
     TIM_TimeBaseStructure.TIM_Period        = s_tb[idx].arr;
     TIM_TimeBaseStructure.TIM_Prescaler     = s_tb[idx].psc;
     TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
     TIM_TimeBaseStructure.TIM_CounterMode   = TIM_CounterMode_Up;
-    TIM_TimeBaseInit(TIM2, &TIM_TimeBaseStructure);
+    TIM_TimeBaseInit(TIM4, &TIM_TimeBaseStructure);
 
-    /* 比较通道 2 仅用于产生触发事件，不输出到引脚 */
+    /* 比较通道 4：模式取 PWM1，比较值设为 1，使触发点位于每个周期起始处。
+     * 输出极性、引脚复用均不需要配置。 */
     TIM_OCInitStructure.TIM_OCMode      = TIM_OCMode_PWM1;
-    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Disable;
+    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
     TIM_OCInitStructure.TIM_Pulse       = 1;
     TIM_OCInitStructure.TIM_OCPolarity  = TIM_OCPolarity_High;
-    TIM_OC2Init(TIM2, &TIM_OCInitStructure);
+    TIM_OC4Init(TIM4, &TIM_OCInitStructure);
 
-    /* 将比较通道 2 的参考信号映射为 TRGO 输出 */
-    TIM_SelectOutputTrigger(TIM2, TIM_TRGOSource_OC2Ref);
+    TIM_Cmd(TIM4, ENABLE);
 
-    TIM_Cmd(TIM2, ENABLE);
+    /* 强制产生一次 CC4 事件，使整条链路立即启动。
+     * 否则最慢档位下要等约 1ms 才会开始第一次采样。 */
+    TIM_GenerateEvent(TIM4, TIM_EventSource_CC4);
 }
 
 void osc_adc_init(void)
@@ -204,7 +232,7 @@ void osc_adc_init(void)
     adc_gpio_init();
     adc_config_init();
     adc_dma_init();
-    tim2_config(s_tb_idx);
+    tim4_config(s_tb_idx);
 }
 
 /* ==========================================================================
@@ -216,7 +244,7 @@ void osc_adc_set_timebase(u8 idx)
     if (idx >= TB_COUNT) idx = TB_COUNT - 1;
 
     s_tb_idx = idx;
-    tim2_config(idx);
+    tim4_config(idx);
 }
 
 u8 osc_adc_get_timebase(void)
