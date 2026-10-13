@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "1) Debug (pyOCD autostart)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Oscilloscope.axf",
+      "servertype": "pyocd",
+      "serverpath": "${config:stm32Toolchain.pyocdPath}",
+      "targetId": "stm32f103rc",
+      "interface": "swd",
+      "runToEntryPoint": "main",
+      "preLaunchTask": "Build + Flash (for debug)",
+      "loadFiles": [],
+      "showDevDebugOutput": "raw",
+      "overrideGDBServerStartedRegex": "GDB server (listening|started) (at|on) port",
+      "armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin"
+    },
+    {
+      "name": "2) Attach to external server (reliable)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Oscilloscope.axf",
+      "servertype": "external",
+      "gdbTarget": "127.0.0.1:3333",
+      "preLaunchTask": "Start GDB server (pyOCD, for Attach)",
+      "loadFiles": [],
+      "showDevDebugOutput": "raw",
+      "armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin"
+    },
+    {
+      "name": "3) Attach (pyOCD autostart, no build)",
+      "type": "cortex-debug",
+      "request": "attach",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Oscilloscope.axf",
+      "servertype": "pyocd",
+      "serverpath": "${config:stm32Toolchain.pyocdPath}",
+      "targetId": "stm32f103rc",
+      "interface": "swd",
+      "loadFiles": [],
+      "showDevDebugOutput": "raw",
+      "overrideGDBServerStartedRegex": "GDB server (listening|started) (at|on) port",
+      "armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "// 说明": "这个工程源文件已转为 UTF-8(带BOM)，Keil 也能正常读取",
+  "// 本机路径": "以下两个路径只在本文件维护，tasks.json / launch.json 通过 ${config:...} 引用",
+  "stm32Toolchain.pyocdPath": "C:/Users/susoc/.pyocd-venv/Scripts/pyocd.exe",
+  "stm32Toolchain.keilBinPath": "D:/apps/keil5MDK/ARM/ARMCC/bin",
+  "files.encoding": "utf8bom",
+  "files.autoGuessEncoding": true,
+  "files.associations": {
+    "*.s": "arm",
+    "*.uvprojx": "xml",
+    "*.uvoptx": "xml",
+    "*.sct": "plaintext",
+    "*.ld": "plaintext"
+  },
+  "C_Cpp.default.includePath": [
+    "${workspaceFolder}/USER",
+    "${workspaceFolder}/CORE",
+    "${workspaceFolder}/SYSTEM/delay",
+    "${workspaceFolder}/SYSTEM/sys",
+    "${workspaceFolder}/SYSTEM/usart",
+    "${workspaceFolder}/HARDWARE/LED",
+    "${workspaceFolder}/HARDWARE/LCD",
+    "${workspaceFolder}/HARDWARE/KEY",
+    "${workspaceFolder}/HARDWARE/TIMER",
+    "${workspaceFolder}/HARDWARE/APP",
+    "${workspaceFolder}/STM32F10x_FWLib/inc"
+  ],
+  "C_Cpp.default.defines": [
+    "STM32F10X_HD",
+    "USE_STDPERIPH_DRIVER"
+  ],
+  "C_Cpp.default.cStandard": "c99",
+  "cortex-debug.armToolchainPath": "C:/Program Files (x86)/Arm GNU Toolchain arm-none-eabi/12.2 mpacbti-rel1/bin",
+  "search.exclude": {
+    "build": true,
+    "OBJ": true,
+    "_gbk_backup": true,
+    "../.tmp": true,
+    "../.tools": true
+  },
+  "files.watcherExclude": {
+    "**/build/**": true,
+    "**/OBJ/**": true,
+    "**/_gbk_backup/**": true,
+    "**/.tmp/**": true
+  }
+}

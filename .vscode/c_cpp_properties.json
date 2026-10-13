@@ -1,0 +1,38 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "STM32F103RC (ARMCC)",
+            "compilerPath": "D:/apps/keil5MDK/ARM/ARMCC/bin/armcc.exe",
+            "cStandard": "c99",
+            "intelliSenseMode": "windows-gcc-arm",
+            "includePath": [
+                "${workspaceFolder}/USER",
+                "${workspaceFolder}/CORE",
+                "${workspaceFolder}/SYSTEM/delay",
+                "${workspaceFolder}/SYSTEM/sys",
+                "${workspaceFolder}/SYSTEM/usart",
+                "${workspaceFolder}/HARDWARE/LED",
+                "${workspaceFolder}/HARDWARE/LCD",
+                "${workspaceFolder}/HARDWARE/KEY",
+                "${workspaceFolder}/HARDWARE/TIMER",
+                "${workspaceFolder}/HARDWARE/APP",
+                "${workspaceFolder}/STM32F10x_FWLib/inc"
+            ],
+            "defines": [
+                "STM32F10X_HD",
+                "USE_STDPERIPH_DRIVER"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/USER",
+                    "${workspaceFolder}/CORE",
+                    "${workspaceFolder}/SYSTEM",
+                    "${workspaceFolder}/HARDWARE",
+                    "${workspaceFolder}/STM32F10x_FWLib/inc"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ]
+}

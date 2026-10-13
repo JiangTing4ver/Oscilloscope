@@ -1,0 +1,114 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build",
+      "type": "shell",
+      "command": "${workspaceFolder}/build.bat",
+      "args": [],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "Build (debug info)",
+      "type": "shell",
+      "command": "${workspaceFolder}/build.bat",
+      "args": ["DEBUG=1"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "Flash only (pyOCD)",
+      "type": "shell",
+      "command": "${config:stm32Toolchain.pyocdPath}",
+      "args": ["load", "-t", "stm32f103rc", "${workspaceFolder}/build/Oscilloscope.hex"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Build + Flash (for debug)",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Build (debug info)", "Kill leftover pyOCD", "Flash only (pyOCD)"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Clean",
+      "type": "shell",
+      "command": "${workspaceFolder}/build.bat",
+      "args": ["clean"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Rebuild",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Clean", "Build"],
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Flash (pyOCD + ST-Link)",
+      "type": "shell",
+      "command": "${config:stm32Toolchain.pyocdPath}",
+      "args": ["load", "-t", "stm32f103rc", "${workspaceFolder}/build/Oscilloscope.hex"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "Build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Kill leftover pyOCD",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-Command",
+        "Get-Process pyocd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"
+      ],
+      "problemMatcher": [],
+      "presentation": { "reveal": "silent", "panel": "shared" }
+    },
+    {
+      "label": "Start GDB server (pyOCD, for Attach)",
+      "type": "shell",
+      "command": "${config:stm32Toolchain.pyocdPath}",
+      "args": ["gdbserver", "-t", "stm32f103rc", "--port", "3333"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": [{ "regexp": ".", "file": 1, "location": 2, "message": 3 }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "Target type is",
+          "endsPattern": "GDB server listening"
+        }
+      },
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "Erase chip (pyOCD)",
+      "type": "shell",
+      "command": "${config:stm32Toolchain.pyocdPath}",
+      "args": ["erase", "-t", "stm32f103rc", "--mass"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    },
+    {
+      "label": "Show size (fromelf)",
+      "type": "shell",
+      "command": "${config:stm32Toolchain.keilBinPath}/fromelf.exe",
+      "args": ["--text", "-z", "${workspaceFolder}/build/Oscilloscope.axf"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared" }
+    }
+  ]
+}

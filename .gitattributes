@@ -1,0 +1,39 @@
+# ==========================================================================
+#  Git 属性配置
+# --------------------------------------------------------------------------
+#  Windows 环境下 git 默认会把 LF 转成 CRLF 并输出大量告警。
+#  这里统一按 text=auto 处理：仓库内保存 LF，检出时按平台自动转换。
+# ==========================================================================
+
+# 默认：自动识别文本文件并规范换行符
+* text=auto
+
+# 明确为文本的格式
+*.c      text
+*.h      text
+*.s      text
+*.md     text
+*.json   text
+*.bat    text eol=crlf
+*.yml    text
+*.mk      text
+Makefile  text
+
+# 二进制文件，禁止任何换行符转换
+*.jpg    binary
+*.jpeg   binary
+*.png    binary
+*.gif    binary
+*.bmp    binary
+*.ico    binary
+*.axf    binary
+*.hex    binary
+*.bin    binary
+*.elf    binary
+*.o      binary
+*.lib    binary
+*.a      binary
+*.pdf    binary
+
+# 编译产物差异不纳入 diff 统计
+build/** linguist-generated=true
