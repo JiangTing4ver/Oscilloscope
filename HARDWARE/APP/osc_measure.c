@@ -43,6 +43,16 @@ static u32 measure_freq(const u16 *wave, u16 n, u32 fs)
 
     if (vmax <= vmin) return 0;
 
+    /* 幅度门限：信号必须明显超过噪声，否则不报告频率。
+     *
+     * 缺少这道判断时，接 GND 或接 3.3V 这类直流输入会给出虚假读数：
+     * 中点取 (Vmax+Vmin)/2，即使只有 1 LSB 的噪声也必然存在跨越中点
+     * 的抖动，计数器会把这些抖动当成周期，算出毫无意义的"频率"。
+     *
+     * 门限取 24 LSB，约合 19 mV（3.3V / 4095 x 24），
+     * 高于实测噪声（约 1 LSB），又远低于任何有意义的信号幅度。 */
+    if ((u16)(vmax - vmin) < OSC_FREQ_MIN_PP) return 0;
+
     mid = (u16)((vmax + vmin) / 2);
 
     for (i = 1; i < n; i++)
