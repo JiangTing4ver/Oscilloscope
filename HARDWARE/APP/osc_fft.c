@@ -1,30 +1,44 @@
 /**
  * @file    osc_fft.c
- * @brief   棰戣氨鍒嗘瀽瀹炵幇锛堝熀 2 鏃堕棿鎶藉彇 FFT锛? * @details 绠楁硶璇存槑锛? *
- *            1. 杈撳叆鍔犳眽瀹佺獥骞跺噺鍘荤洿娴佸垎閲忋€? *               鍑忕洿娴佹槸涓轰簡閬垮厤 0 鍙烽鐐规帺鐩栫湡瀹炶氨绾匡紱
- *            2. 浣嶅弽杞噸鎺掞紝浣胯緭鍏ュ簭鍒楁弧瓒宠澏褰㈣繍绠楃殑娆″簭瑕佹眰锛? *            3. 閫愮骇铦跺舰杩愮畻锛屾棆杞洜瀛愰€氳繃鏌ヨ〃鑾峰緱锛? *            4. 璁＄畻鍚勯鐐瑰箙搴︼紝鎸夋渶澶у€煎綊涓€鍖栧苟浣滃鏁板帇缂┿€? *
- *          瀹氱偣鍖栬璁★細
- *            姹夊畞绐楃郴鏁颁笌鏃嬭浆鍥犲瓙鍧囦负缂栬瘧鏈熼璁＄畻鐨勫父閲忚〃锛屽瓨鏀句簬 Flash锛? *            杩愯鏈熷彧璇汇€傝繖鏍锋棦閬垮厤浜嗘瘡甯ч噸澶嶈绠椾笁瑙掑嚱鏁帮紝涔熸棤闇€閾炬帴
- *            鏁板搴擄紙sin/cos锛夛紝鍙樉钁楀噺灏忎唬鐮佷綋绉€? *
- *            姹夊畞绐楃簿搴?Q16锛屾棆杞洜瀛愮簿搴?Q15锛? *            铦跺舰杩愮畻涓殑涔樻硶缁撴灉閫氳繃鍙崇Щ杩樺師瀹氱偣姣斾緥銆? *
- * @note    鍏ㄩ儴杩愮畻涓哄畾鐐规暣鏁帮紝涓嶄娇鐢ㄦ诞鐐瑰崟鍏冦€? */
+ * @brief   频谱分析实现（基 2 时间抽取 FFT）
+ * @details 算法流程：
+ *
+ *            1. 输入加汉宁窗并减去直流分量。
+ *               减直流是为了避免 0 号频点掩盖真实谱线；
+ *            2. 位反转重排，使输入序列满足蝶形运算的次序要求；
+ *            3. 逐级蝶形运算，旋转因子通过查表获得；
+ *            4. 计算各频点幅度，按最大值归一化并作对数压缩。
+ *
+ *          定点化设计：
+ *            汉宁窗系数与旋转因子都是编译期预计算的常量表，存放于 Flash，
+ *            运行期只读。这样既避免每帧重复计算三角函数，也无需链接
+ *            数学库（sin/cos），可显著减小代码体积。
+ *
+ *            汉宁窗精度 Q15，旋转因子精度 Q15，
+ *            蝶形运算的乘法结果通过右移还原定点比例。
+ *
+ * @note    全部运算为定点整数，不使用浮点单元。
+ */
 
 #include "osc_fft.h"
 
-/** 鏃嬭浆鍥犲瓙琛ㄩ暱搴︼細淇濆瓨 0 ~ 90 搴︾殑姝ｅ鸡鍊?*/
+/** 旋转因子表长度：保存 0 ~ 90 度的正弦值 */
 #define SIN_LEN         (FFT_N / 4)
 
-/** 姹夊畞绐楃郴鏁扮殑瀹氱偣绮惧害 */
+/** 汉宁窗系数的定点精度（Q15，与 s16 存储类型匹配） */
 #define HANN_Q          15
 
-/** 鍙樻崲鐢ㄧ殑瀹為儴涓庤櫄閮ㄧ紦鍐?*/
+/** 频谱显示的对数动态范围 (dB)，超出此范围的低电平谱线按 0 处理 */
+#define FFT_DB_SPAN     40
+
+/** 变换用的实部与虚部缓冲 */
 static s32 s_real[FFT_N];
 static s32 s_imag[FFT_N];
 
-/** 褰掍竴鍖栧悗鐨勯璋卞箙搴︼紝鍙栧€?0 ~ 100 */
+/** 归一化后的频谱幅度，取值 0 ~ 100 */
 static u8 s_mag[FFT_BINS];
 
-/** 姹夊畞绐楃郴鏁拌〃锛圦16锛夛紝棰勮绠楀父閲忥紝瀛樻斁浜?Flash */
+/** 汉宁窗系数表（Q15），预计算常量，存放于 Flash */
 static const s16 s_hann[FFT_N] =
 {
     (s16)     0, (s16)     5, (s16)    20, (s16)    45, (s16)    80, (s16)   124, (s16)   179, (s16)   243,
@@ -61,7 +75,7 @@ static const s16 s_hann[FFT_N] =
     (s16)   243, (s16)   179, (s16)   124, (s16)    80, (s16)    45, (s16)    20, (s16)     5, (s16)     0
 };
 
-/** 鏃嬭浆鍥犲瓙姝ｅ鸡琛紙Q15锛夛紝棰勮绠楀父閲忥紝瀛樻斁浜?Flash */
+/** 旋转因子正弦表（Q15），预计算常量，存放于 Flash */
 static const s16 s_sin[SIN_LEN + 1] =
 {
     (s16)     0, (s16)   804, (s16)  1608, (s16)  2410, (s16)  3212, (s16)  4011, (s16)  4808, (s16)  5602,
@@ -76,33 +90,38 @@ static const s16 s_sin[SIN_LEN + 1] =
 };
 
 /**
- * @brief  鏌ヨ〃鑾峰彇鏃嬭浆鍥犲瓙 cos/sin
- * @param  k     瑙掑害绱㈠紩锛屽搴旇搴?2*pi*k/N锛屽彇鍊艰寖鍥?0 ~ N-1
- * @param  cos_v 杈撳嚭锛氫綑寮﹀€硷紙Q15锛? * @param  sin_v 杈撳嚭锛氭寮﹀€硷紙Q15锛? *
- * @details 鍒╃敤涓夎鍑芥暟鐨勫绉版€э紝鎶婁换鎰忚搴︾殑 cos/sin 褰掔害鍒? *          绗竴璞￠檺鐨勬煡琛ㄨ寖鍥达細
+ * @brief  查表获取旋转因子 cos/sin
+ * @param  k     角度索引，对应角度 2*pi*k/N，取值范围 0 ~ N-1
+ * @param  cos_v 输出：余弦值（Q15）
+ * @param  sin_v 输出：正弦值（Q15）
  *
- *              cos(t) = sin(90搴?- t)
- *              sin(180搴?- t) =  sin(t)
- *              cos(180搴?- t) = -cos(t)
+ * @details 利用三角函数的对称性，把任意角度的 cos/sin 都归约到
+ *          第一象限的查表范围：
+ *
+ *              cos(t) = sin(90度 - t)
+ *              sin(180度 - t) =  sin(t)
+ *              cos(180度 - t) = -cos(t)
  */
 static void twiddle_get(u16 k, s16 *cos_v, s16 *sin_v)
 {
-    u16 q = k & (SIN_LEN - 1);          /* 瀵?90 搴﹀彇妯?*/
-    u16 seg = (k / SIN_LEN) & 3;        /* 鎵€鍦ㄨ薄闄?*/
+    u16 q = k & (SIN_LEN - 1);          /* 对 90 度取模 */
+    u16 seg = (k / SIN_LEN) & 3;        /* 所在象限 */
     s16 s = s_sin[q];
     s16 c = s_sin[SIN_LEN - q];         /* cos(t) = sin(90 - t) */
 
     switch (seg)
     {
-        case 0:  *cos_v =  c;  *sin_v =  s;  break;     /* 0 ~ 90 搴?*/
-        case 1:  *cos_v = -s;  *sin_v =  c;  break;     /* 90 ~ 180 搴?*/
-        case 2:  *cos_v = -c;  *sin_v = -s;  break;     /* 180 ~ 270 搴?*/
-        default: *cos_v =  s;  *sin_v = -c;  break;     /* 270 ~ 360 搴?*/
+        case 0:  *cos_v =  c;  *sin_v =  s;  break;     /* 0 ~ 90 度 */
+        case 1:  *cos_v = -s;  *sin_v =  c;  break;     /* 90 ~ 180 度 */
+        case 2:  *cos_v = -c;  *sin_v = -s;  break;     /* 180 ~ 270 度 */
+        default: *cos_v =  s;  *sin_v = -c;  break;     /* 270 ~ 360 度 */
     }
 }
 
 /**
- * @brief  浣嶅弽杞噸鎺? */
+ * @brief  位反转重排
+ * @details 基 2 FFT 的蝶形运算要求输入按位反转次序排列
+ */
 static void fft_bit_reverse(void)
 {
     u16 i, j = 0;
@@ -116,7 +135,7 @@ static void fft_bit_reverse(void)
             ti = s_imag[i]; s_imag[i] = s_imag[j]; s_imag[j] = ti;
         }
 
-        /* 浣嶅弽杞姞娉曪細浠庢渶楂樹綅鍚戜綆浣嶈繘浣?*/
+        /* 位反转加法：从最高位向低位进位 */
         {
             u16 bit = FFT_N >> 1;
 
@@ -130,6 +149,42 @@ static void fft_bit_reverse(void)
     }
 }
 
+/**
+ * @brief  求以 2 为底的对数，结果放大 256 倍
+ * @param  x  输入值，必须大于 0
+ * @retval log2(x) x 256
+ *
+ * @details 整数对数实现：先定位最高有效位得到整数部分，
+ *          再用尾数最高几位做线性插值得到小数部分。
+ *
+ *          相比"只用最高有效位之差"的粗略做法，这里带 8 位小数，
+ *          可以把对数刻度细分到约 0.02 个二进制位（约 0.1dB），
+ *          使频谱柱状图的高度分布更符合真实幅度关系。
+ */
+static u32 log2_q8(u32 x)
+{
+    u8  bit = 0;
+    u32 t;
+    u32 mantissa;
+
+    if (x == 0) return 0;
+
+    /* 整数部分：最高有效位的位置 */
+    for (t = x; t > 1; t >>= 1) bit++;
+
+    /* 小数部分：把尾数归一化到 8 位精度 */
+    if (bit >= 8)
+    {
+        mantissa = (x >> (bit - 8)) & 0xFF;
+    }
+    else
+    {
+        mantissa = (x << (8 - bit)) & 0xFF;
+    }
+
+    return ((u32)bit << 8) | mantissa;
+}
+
 void osc_fft_run(const u16 *wave, u16 n)
 {
     u16 i, stage, span, half;
@@ -139,11 +194,12 @@ void osc_fft_run(const u16 *wave, u16 n)
     if (n == 0) return;
     if (n > FFT_N) n = FFT_N;
 
-    /* 璁＄畻鐩存祦鍒嗛噺锛屼綔涓哄姞绐楁椂鐨勪腑鐐瑰弬鑰?*/
+    /* ---- 1. 计算直流分量并加窗 ----
+     * 直流分量取一屏平均值，加窗前先减去它，
+     * 否则 0 号频点会淹没有用的谱线 */
     for (i = 0; i < n; i++) sum += wave[i];
     mid = (u16)(sum / n);
 
-    /* ---- 1. 鍔犵獥骞跺幓鐩存祦 ---- */
     for (i = 0; i < FFT_N; i++)
     {
         s32 v;
@@ -151,21 +207,21 @@ void osc_fft_run(const u16 *wave, u16 n)
         if (i < n)
         {
             v = (s32)wave[i] - (s32)mid;
-            v = (v * (s32)s_hann[i]) >> HANN_Q;
+            v = (v * (s32)s_hann[i]) >> HANN_Q;     /* 加汉宁窗并还原 Q15 */
         }
         else
         {
-            v = 0;      /* 鐐规暟涓嶈冻閮ㄥ垎琛ラ浂 */
+            v = 0;      /* 点数不足部分补零 */
         }
 
         s_real[i] = v;
         s_imag[i] = 0;
     }
 
-    /* ---- 2. 浣嶅弽杞噸鎺?---- */
+    /* ---- 2. 位反转重排 ---- */
     fft_bit_reverse();
 
-    /* ---- 3. 铦跺舰杩愮畻 ---- */
+    /* ---- 3. 蝶形运算 ---- */
     for (span = 2; span <= FFT_N; span <<= 1)
     {
         half = span >> 1;
@@ -182,8 +238,8 @@ void osc_fft_run(const u16 *wave, u16 n)
 
                 twiddle_get(k, &wc, &ws);
 
-                /* 澶嶆暟涔樻硶锛?re*cos - im*sin, re*sin + im*cos)
-                 * 鍙崇Щ 15 浣嶈繕鍘?Q15 绯绘暟寮曞叆鐨勬斁澶?*/
+                /* 复数乘法：(re*cos - im*sin, re*sin + im*cos)
+                 * 右移 15 位还原 Q15 系数引入的放大 */
                 tr = ((s_real[b] * wc) - (s_imag[b] * ws)) >> 15;
                 ti = ((s_real[b] * ws) + (s_imag[b] * wc)) >> 15;
 
@@ -195,21 +251,30 @@ void osc_fft_run(const u16 *wave, u16 n)
         }
     }
 
-    /* ---- 4. 姹傚箙搴﹀苟鎸夋渶澶у€煎綊涓€鍖?----
-     * 閲囩敤瀵规暟鍘嬬缉锛氫互 30dB 鍔ㄦ€佽寖鍥存槧灏勫埌 0 ~ 100 鍒诲害锛?     * 浣垮己寮辫氨绾胯兘澶熷悓鏃跺彲瑙?*/
+    /* ---- 4. 求幅度并按最大值归一化 ----
+     * 采用对数刻度：以 FFT_DB_SPAN 定义的动态范围映射到 0 ~ 100，
+     * 使强弱谱线能够同时可见。
+     *
+     * 由于开方是单调运算，不影响"谁更大"的判断，
+     * 因此直接比较幅度平方，省去 128 次开方。 */
     {
-        u32 max_mag = 0;
+        u32 max_log = 0;
 
         for (i = 0; i < FFT_BINS; i++)
         {
             s32 re = s_real[i];
             s32 im = s_imag[i];
             u32 mag_sq = (u32)(re * re + im * im);
+            u32 lg;
 
-            if (mag_sq > max_mag) max_mag = mag_sq;
+            /* 跳过 0 号频点（直流残留），它不参与最大值统计 */
+            if (i == 0 || mag_sq == 0) continue;
+
+            lg = log2_q8(mag_sq);
+            if (lg > max_log) max_log = lg;
         }
 
-        if (max_mag == 0)
+        if (max_log == 0)
         {
             for (i = 0; i < FFT_BINS; i++) s_mag[i] = 0;
             return;
@@ -228,16 +293,23 @@ void osc_fft_run(const u16 *wave, u16 n)
             }
             else
             {
-                /* 鐢ㄦ渶楂樻湁鏁堜綅涔嬪樊杩戜技 log2 姣斿€硷紝姣忎釜浜岃繘鍒朵綅绾﹀悎 6dB銆?                 * 30dB 鍔ㄦ€佽寖鍥村搴?5 涓簩杩涘埗浣嶏紝姣忓樊涓€浣嶅湪鍒诲害涓婅“鍑?20銆?*/
-                u8  bit_max = 0, bit_cur = 0;
-                u32 t;
+                u32 lg = log2_q8(mag_sq);
 
-                for (t = max_mag; t > 1; t >>= 1) bit_max++;
-                for (t = mag_sq;  t > 1; t >>= 1) bit_cur++;
+                /* 相对最大值下降了多少个 1/256 二进制位。
+                 * 1 个二进制位约合 6.02dB，因此换算成 dB 需要乘 6.02。
+                 * 用整数近似：dB x 100 = diff x 602 / 256 */
+                u32 diff_q8 = (max_log > lg) ? (max_log - lg) : 0;
+                u32 db_x100 = (diff_q8 * 602) / 256;
 
-                if (bit_cur >= bit_max)          level = 100;
-                else if (bit_max - bit_cur >= 5) level = 0;
-                else                             level = (u8)(100 - (bit_max - bit_cur) * 20);
+                if (db_x100 >= (u32)(FFT_DB_SPAN * 100))
+                {
+                    level = 0;
+                }
+                else
+                {
+                    /* 把 0 ~ FFT_DB_SPAN dB 线性映射到 0 ~ 100 */
+                    level = (u8)(100 - (db_x100 * 100) / (FFT_DB_SPAN * 100));
+                }
             }
 
             s_mag[i] = level;
@@ -249,7 +321,7 @@ u32 osc_fft_bin_freq(u16 bin, u32 fs)
 {
     if (bin >= FFT_BINS) return 0;
 
-    /* 浣跨敤 64 浣嶄腑闂撮噺锛岄伩鍏?bin * fs 婧㈠嚭 */
+    /* 使用 64 位中间量，避免 bin * fs 溢出 */
     return (u32)(((unsigned long long)bin * (unsigned long long)fs) / FFT_N);
 }
 
@@ -264,7 +336,7 @@ u32 osc_fft_dominant_freq(u32 fs)
     u8  best = 0;
     u16 best_bin = 0;
 
-    /* 璺宠繃 0 鍙烽鐐癸紙鐩存祦锛夊強閭昏繎娉勬紡鍖猴紝浠庣 2 涓鐐瑰紑濮嬫悳绱?*/
+    /* 跳过 0 号频点（直流）及邻近泄漏区，从第 2 个频点开始搜索 */
     for (i = 2; i < FFT_BINS; i++)
     {
         if (s_mag[i] > best)
@@ -274,7 +346,7 @@ u32 osc_fft_dominant_freq(u32 fs)
         }
     }
 
-    if (best < 20) return 0;        /* 宄板€艰繃寮憋紝鍒ゅ畾涓烘棤鏈夋晥淇″彿 */
+    if (best < 20) return 0;        /* 峰值过弱，判定为无有效信号 */
 
     return osc_fft_bin_freq(best_bin, fs);
 }
