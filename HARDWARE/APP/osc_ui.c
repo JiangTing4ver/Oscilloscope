@@ -67,6 +67,32 @@
 #define FRAME_MS        50
 
 /* ==========================================================================
+ * 波形逐像素双缓冲
+ * --------------------------------------------------------------------------
+ *  波形区共 320 x 186 = 59520 个像素，用位图按"每像素 1 bit"记录：
+ *
+ *      s_bg[]   背景层：预存的网格与触发电平线（绘制一次后不再变化）
+ *      s_prev[] 上一帧波形覆盖的像素
+ *      s_cur[]  本帧波形覆盖的像素
+ *
+ *  每帧只需比较新旧两个位图，**精确地**把"本帧不再是波形"的点恢复为
+ *  背景色、"本帧新成为波形"的点写入波形色。这样同一像素只写入一次，
+ *  既不会残留旧波形，也不会出现"先擦后画"的中间空白。
+ *
+ *  为什么必须逐像素而非按列区间处理：早期实现按"该列旧 y 到新 y 的
+ *  整个区间"重刷，并用"是否落在本帧波形区间内"判断颜色。当同一列中
+ *  既有旧波形又有新波形时（信号抖动剧烈时极为常见），旧像素会被误判
+ *  为波形色而**永远擦不掉**，屏幕上留下越来越粗的青色残迹。
+ * ========================================================================== */
+
+#define WAVE_BYTES_PER_ROW   ((SCR_W + 7) / 8)
+#define WAVE_MASK_SIZE       (WAVE_BYTES_PER_ROW * WAVE_H)
+
+static u8 s_bg[WAVE_MASK_SIZE];         /**< 背景层位图（1 表示网格/触发电平线） */
+static u8 s_prev[WAVE_MASK_SIZE];       /**< 上一帧波形位图 */
+static u8 s_cur[WAVE_MASK_SIZE];        /**< 本帧波形位图 */
+
+/* ==========================================================================
  * 模块状态
  * ========================================================================== */
 
@@ -134,17 +160,50 @@ static u16 bg_pixel_color(u16 x, u16 y)
 }
 
 /**
+ * @brief  设置波形位图中某个像素
+ * @param  mask  位图首地址
+ * @param  x,y   像素坐标
+ */
+static void mask_set(u8 *mask, u16 x, u16 y)
+{
+    u16 row = (u16)(y - WAVE_Y0);
+
+    mask[row * WAVE_BYTES_PER_ROW + (x >> 3)] |= (u8)(1 << (x & 7));
+}
+
+/**
+ * @brief  清空波形位图
+ */
+static void mask_clear(u8 *mask)
+{
+    u32 i;
+
+    for (i = 0; i < WAVE_MASK_SIZE; i++) mask[i] = 0;
+}
+
+/**
  * @brief  绘制波形区背景（整幅）
- * @details 仅在初始化、切换显示模式等需要全屏重建时调用
+ * @details 仅在初始化、切换显示模式等需要全屏重建时调用。
+ *          绘制的同时把"哪些像素属于背景元素"记录到位图 s_bg 中，
+ *          后续擦除波形时直接查这张表即可，无需重复计算。
  */
 static void draw_grid(void)
 {
     u16 x, y;
 
+    mask_clear(s_bg);
+    mask_clear(s_prev);
+    mask_clear(s_cur);
+
     for (y = WAVE_Y0; y < WAVE_Y1; y++)
     {
         for (x = 0; x < SCR_W; x++)
         {
+            if (bg_pixel_color(x, y) != C_BG)
+            {
+                mask_set(s_bg, x, y);
+            }
+
             LCD_Fast_DrawPoint(x, y, bg_pixel_color(x, y));
         }
     }
@@ -189,102 +248,86 @@ static u16 wave_y_at(u16 x)
 }
 
 /**
- * @brief  绘制波形曲线并擦除上一帧的残留
+ * @brief  绘制波形曲线（基于位图的精确逐像素更新）
  *
- * @details 采用**单趟绘制**：从屏幕左侧逐列向右处理，
- *          每一列内先恢复被上一帧波形覆盖的像素，紧接着写入本帧波形。
+ * @details 处理流程：
+ *            1. 依据本帧采样值生成本帧波形位图 s_cur，
+ *               相邻列之间按竖直区间填充，保证曲线连续；
+ *            2. 逐行比较 s_prev 与 s_cur，只更新两者不同的像素：
+ *                 - 仅上一帧有  -> 恢复背景色（擦除残迹）
+ *                 - 本帧有      -> 写入波形色
+ *            3. 把 s_cur 复制到 s_prev，作为下一帧的比较基准。
  *
- *          之所以这样安排：若先整体擦除、再整体重绘，两次操作之间
- *          波形区会短暂呈现"没有波形"的状态，在逐像素写入的并口屏上
- *          会表现为可见闪烁。按列交错后，屏幕上任一时刻要么是完整的
- *          新波形、要么是完整的旧波形，不会出现空白。
+ *          由于置位与清零的像素互不重叠，每个像素每帧最多写入一次，
+ *          不会出现"先整体擦除、再整体重绘"造成的中间空白。
  *
- * @note    本帧与上一帧在同列附近可能存在高度差，需要在列内竖直填充，
- *          否则信号陡变时曲线会断裂或留下残点。
+ * @note    之所以改为逐像素位图比较，是因为早期"按列区间重刷"的实现在
+ *          同一列同时存在新旧波形时会把旧像素误判为波形色而无法擦除，
+ *          屏幕上会留下逐渐变粗的青色残迹（信号抖动剧烈时尤其明显）。
  */
 static void draw_waveform(void)
 {
-    /** 上一帧各列的波形纵坐标，用于精确擦除 */
-    static u16 prev_y[SCR_W];
+    u16 x, y;
+    u16 row, byte_idx;
+    u16 loops;
+    u16 i;
 
-    /** 上一帧各列是否已绘制（首帧为 0，避免擦到随机值） */
-    static u8  prev_ok[SCR_W];
-
-    u16 x;
+    /* ---- 1. 生成本帧波形位图 ---- */
+    mask_clear(s_cur);
 
     for (x = 0; x < SCR_W; x++)
     {
         u16 y_new = wave_y_at(x);
-        u16 y_link_lo, y_link_hi;   /* 本帧波形在本列占用的纵向区间 */
-        u16 y_old_lo, y_old_hi;     /* 上一帧波形在本列附近的纵向区间 */
-        u16 y_lo, y_hi;             /* 需要重刷的总区间 */
-        u16 y;
+        u16 y_lo  = y_new;
+        u16 y_hi  = y_new;
 
-        /* ---- 1. 本帧波形区间 ----
-         * 与前一列连成斜线：取两列纵坐标之间的整段，保证曲线连续 */
-        y_link_lo = y_new;
-        y_link_hi = y_new;
-
+        /* 与前一列连线：取两列纵坐标之间的整段 */
         if (x > 0)
         {
             u16 y_pc = wave_y_at((u16)(x - 1));
 
-            if (y_pc < y_link_lo) y_link_lo = y_pc;
-            if (y_pc > y_link_hi) y_link_hi = y_pc;
+            if (y_pc < y_lo) y_lo = y_pc;
+            if (y_pc > y_hi) y_hi = y_pc;
         }
-
-        /* ---- 2. 上一帧波形残留区间 ----
-         * 相邻两列的旧坐标都要还原，否则斜线会在列间留下残点 */
-        y_old_lo = 0;
-        y_old_hi = 0;
-        {
-            u8  has = 0;
-
-            if (x > 0 && prev_ok[x - 1])
-            {
-                y_old_lo = prev_y[x - 1];
-                y_old_hi = prev_y[x - 1];
-                has = 1;
-            }
-
-            if (prev_ok[x])
-            {
-                if (!has)
-                {
-                    y_old_lo = prev_y[x];
-                    y_old_hi = prev_y[x];
-                    has = 1;
-                }
-                else
-                {
-                    if (prev_y[x] < y_old_lo) y_old_lo = prev_y[x];
-                    if (prev_y[x] > y_old_hi) y_old_hi = prev_y[x];
-                }
-            }
-
-            if (!has)
-            {
-                /* 首帧：没有旧内容需要擦除 */
-                y_old_lo = y_link_lo;
-                y_old_hi = y_link_lo;
-            }
-        }
-
-        /* ---- 3. 重刷区间 = 本帧波形 ∪ 上一帧残留 ----
-         * 一次遍历内完成擦除与绘制：落在本帧波形区间的画波形色，
-         * 其余恢复为背景色（网格或触发电平线）。
-         * 由于同一像素只写入一次，不会出现"先擦后画"的中间空白。 */
-        y_lo = (y_link_lo < y_old_lo) ? y_link_lo : y_old_lo;
-        y_hi = (y_link_hi > y_old_hi) ? y_link_hi : y_old_hi;
 
         for (y = y_lo; y <= y_hi; y++)
         {
-            LCD_Fast_DrawPoint(x, y,
-                (y >= y_link_lo && y <= y_link_hi) ? C_WAVE : bg_pixel_color(x, y));
+            mask_set(s_cur, x, y);
         }
+    }
 
-        prev_y[x]  = y_new;
-        prev_ok[x] = 1;
+    /* ---- 2. 只更新发生变化的像素 ---- */
+    for (row = 0; row < WAVE_H; row++)
+    {
+        u16 y_abs = (u16)(WAVE_Y0 + row);
+
+        for (byte_idx = 0; byte_idx < WAVE_BYTES_PER_ROW; byte_idx++)
+        {
+            u16 off = (u16)(row * WAVE_BYTES_PER_ROW + byte_idx);
+            u8  old_bits = s_prev[off];
+            u8  new_bits = s_cur[off];
+
+            if (old_bits == new_bits) continue;
+
+            for (loops = 0; loops < 8; loops++)
+            {
+                u16 x_abs = (u16)(byte_idx * 8 + loops);
+                u8  bit = (u8)(1 << loops);
+                u8  was = (old_bits & bit) ? 1 : 0;
+                u8  now = (new_bits & bit) ? 1 : 0;
+
+                if (x_abs >= SCR_W || was == now) continue;
+
+                LCD_Fast_DrawPoint(x_abs, y_abs,
+                    now ? C_WAVE : bg_pixel_color(x_abs, y_abs));
+            }
+        }
+    }
+
+    /* ---- 3. 保存本帧位图供下一帧比较 ---- */
+    for (i = 0; i < WAVE_MASK_SIZE; i++)
+    {
+        s_prev[i] = s_cur[i];
     }
 
     POINT_COLOR = C_TEXT;
